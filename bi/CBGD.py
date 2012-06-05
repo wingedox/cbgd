@@ -1,10 +1,10 @@
 #coding=utf-8
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import pymssql
 from sqlalchemy.engine import create_engine
 from sqlalchemy.orm.session import sessionmaker
-from analysis import warehouse
+from analysis import warehouse, warehouse_snap
 import analysis
 
 __author__ = 'GaoJun'
@@ -23,17 +23,6 @@ def init():pass
 #        if doc['product_id']=='040120001' and doc['warehouse_id']=='FX010101':
 #            f.write('%s:,%s,%s\n' % (noteno, s and s.quatity, str(doc)))
 
-def __getKey(item):
-    if isinstance(item, dict):
-        k = str({'department_id':item['department_id'],
-                 'product_id':item['product_id'],
-                 'warehouse_id':item['warehouse_id']})
-    else:
-        k = str({'department_id':item.department_id,
-                 'product_id':item.product_id,
-                 'warehouse_id':item.warehouse_id})
-    return k
-
 def buildDoc(sql):
     cur.execute(sql)
     rows = cur.fetchall()
@@ -47,7 +36,7 @@ def buildDoc(sql):
             'product_id': r[7].strip(),
             'partner_id': r[3].strip(),
             'price': abs(r[9]),
-            'quatity': abs(r[8]),
+            'quantity': abs(r[8]),
             'warehouse_id': r[4].strip(),
             'sales_id':r[5] and r[5].strip()
         }
@@ -95,10 +84,9 @@ def qc():
                 'department_id':row['department'],
                 'warehouse_id':row['houseno'],
                 'product_id':row['wareno'],
-                'quatity':row['amount'],
+                'quantity':row['amount'],
                 'price':row['price'],
             }
-            key = __getKey(doc)
             warehouse.warein(doc)
         analysis.session.commit()
         sql ="update bi_jxc set computed=1 where notetype='QC'"
@@ -119,9 +107,7 @@ def sales(noteno):
     docs = buildDoc(sql.encode('cp936'))
     for doc in docs:
         if doc['product_id'] <> '31016666':
-#            s = warehouse.getStock(doc['department_id'],doc['product_id'],doc['warehouse_id'])
-#            log('\t', doc, noteno, s)
-            warehouse.wareout(**doc)
+            warehouse.wareout(doc)
 
 def returnOfSales(noteno):
     sql = '''
@@ -135,9 +121,7 @@ def returnOfSales(noteno):
     sql = sql % noteno
     docs = buildDoc(sql)
     for doc in docs:
-#        s = warehouse.getStock(doc['department_id'],doc['product_id'],doc['warehouse_id'])
-#        log('\t', doc, noteno, s)
-        warehouse.warein(**doc)
+        warehouse.warein(doc)
 
 def purchase(noteno):
     sql = '''
@@ -151,9 +135,7 @@ def purchase(noteno):
     sql = sql % noteno
     docs = buildDoc(sql)
     for doc in docs:
-#        s = warehouse.getStock(doc['department_id'],doc['product_id'],doc['warehouse_id'])
-#        log('\t', doc, noteno, s)
-        warehouse.warein(**doc)
+        warehouse.warein(doc)
 
 def returnOfPurchase(noteno):
     sql = '''
@@ -168,9 +150,7 @@ def returnOfPurchase(noteno):
     sql = sql % noteno
     docs = buildDoc(sql)
     for doc in docs:
-#        s = warehouse.getStock(doc['department_id'],doc['product_id'],doc['warehouse_id'])
-#        log('\t', doc, noteno, s)
-        warehouse.wareout(**doc)
+        warehouse.wareout(doc)
 
 def salesChange(noteno):pass
 
@@ -214,25 +194,22 @@ def stockMove(noteno):
             'department_id':row[6].strip(),
             'warehouse_id':old,
             'product_id':row[4].strip(),
-            'quatity':row[5]
+            'quantity':row[5],
         }
-
         s = warehouse.getStock(doc['department_id'],doc['product_id'],doc['warehouse_id'])
         if not s:
             raise Exception(u'没有库存。%s' % str(doc))
-#        log('\t', doc, noteno, s)
-        warehouse.wareout(**doc)
+        doc['price'] = s.price
+        warehouse.wareout(doc)
         doc = {
             'notedate':row[1],
             'department_id':row[7].strip(),
             'warehouse_id':new,
             'product_id':row[4].strip(),
-            'quatity':row[5],
+            'quantity':row[5],
             'price':s.price,
         }
-#        s = warehouse.getStock(doc['department_id'],doc['product_id'],doc['warehouse_id'])
-#        log('\t', doc, noteno, s)
-        warehouse.warein(**doc)
+        warehouse.warein(doc)
 
 def dayWarein(day):
     sql = "select noteno, notetype, id from bi_jxc where notetype in ('CR','XT') and computed=0 and \
@@ -251,41 +228,23 @@ def dayWarein(day):
 
 def dayWaremove(day):
     # 对于移出库库房没有负库存限制，可能先由A库移到B库，此时A库为负库存
-    # 再由C库移到A库。因此先查询出C移到A的记录做处理
-#    sql = '''
-#    select a.noteno, 'YK' as notetype, a.id from
-#    (SELECT h.*, m.wareno, j.id
-#    FROM WAREALLOTH h,WAREALLOTM m,bi_jxc j where h.noteno = m.noteno
-#    and h.noteno=j.noteno and j.notetype='YK' and j.computed=0 and
-#    CONVERT(varchar(10), j.notedate, 120) = '%s') a,
-#    (SELECT h.*, m.wareno, j.id
-#    FROM WAREALLOTH h,WAREALLOTM m,bi_jxc j where h.noteno = m.noteno
-#    and h.noteno=j.noteno and j.notetype='YK' and j.computed=0 and
-#    CONVERT(varchar(10), j.notedate, 120) = '%s') b
-#    where a.NewHouseno=b.Oldhouseno and a.wareno=b.wareno
-#    ''' % (day, day)
-#    cur.execute(sql)
-#    rows = cur.fetchall()
-#    for row in rows:
-#        n = row[0].strip()
-#        t = row[1].strip()
-#        i = row[2]
-#        if t=='YK':
-#            stockMove(n)
-#        save(i)
-    for i in range(2):
+    # 再由C库移到A库。
+    for j in range(2):
         sql = "select noteno, notetype, id from bi_jxc where notetype in ('YK') and computed=0 and \
         CONVERT(varchar(10), notedate, 120)='%s' order by notedate, noteno" % day
         cur.execute(sql)
         rows = cur.fetchall()
         for row in rows:
             n = row[0].strip()
-            t = row[1].strip()
             i = row[2]
             try:
                 stockMove(n)
                 save(i)
-            except :
+            except Exception, e:
+                try:
+                    print e.message
+                except :
+                    print e.message.encode('utf-8')
                 analysis.session.rollback()
                 _conn.rollback()
                 continue
@@ -307,6 +266,24 @@ def dayWareout(day):
             returnOfPurchase(n)
         save(i)
 
+def rollback(backdate):
+    s = backdate.strftime('%Y-%m-%d')
+    n = backdate + timedelta(days=-1)
+    n = n.strftime('%Y-%m-%d')
+    for o in analysis.session.query(warehouse_snap).filter(warehouse_snap.stamp>=s):
+        analysis.session.delete(o)
+    for o in analysis.session.query(warehouse):
+        analysis.session.delete(o)
+    for snap in analysis.session.query(warehouse_snap).filter(
+        warehouse_snap.stamp==n):
+        stock = warehouse_snap.snapToStock(snap)
+        analysis.session.add(stock)
+    sql = "update bi_jxc set computed=0 " \
+          "where CONVERT(varchar(10), notedate, 120)>='%s'" % s
+    cur.execute(sql)
+    analysis.session.commit()
+    _conn.commit()
+
 _host = 'localhost'
 _pwd = '52311'
 _db = 'jxcdata0002'
@@ -322,6 +299,9 @@ Session = sessionmaker(bind=engine)
 analysis.session = Session()
 analysis.metadata.create_all(bind=engine)
 
+rollback(datetime.strptime('2011-08-01', '%Y-%m-%d'))
+exit()
+
 sql = "select * from bi_jxc where notetype = 'QC' and computed=0"
 cur.execute(sql)
 cur.fetchall()
@@ -330,36 +310,32 @@ if cur.rowcount==1:
 elif cur.rowcount<>0:
     raise Exception(u'不止一条期初数据!')
 
-while 1:
-    sql = "select min(notedate) from bi_jxc where computed=0"
-    cur.execute(sql)
-    row = cur.fetchone()
-    if not row:break
-    notedate = datetime.strftime(row[0], "%Y-%m-%d")
+def main():
+    i = 0
+    while 1:
+        sql = "select min(notedate) from bi_jxc where computed=0"
+        cur.execute(sql)
+        row = cur.fetchone()
+        if not row:break
+        notedate = datetime.strftime(row[0], "%Y-%m-%d")
 
-    dayWarein(notedate)
-    dayWaremove(notedate)
-    dayWareout(notedate)
-#    analysis.session.commit()
-#    cur.execute(computed_sql % notedate)
-#    _conn.commit()
+        dayWarein(notedate)
+        dayWaremove(notedate)
+        dayWareout(notedate)
 
-#    try:
-#        dayWarein(notedate)
-#        dayWaremove(notedate)
-#        dayWareout(notedate)
-#        analysis.session.commit()
-#        cur.execute(computed_sql % notedate)
-#        _conn.commit()
-#    except Exception, e:
-#        analysis.session.rollback()
-#        _conn.rollback()
-#        print e.message.encode('utf-8')
-#        break
 
-    print '\r%s' % notedate,
-cur.close()
-cur_bi.close()
+        print '\r%s' % notedate,
+
+    cur.close()
+    cur_bi.close()
+
+main()
+#import profile
+#profile.run('main()','prof.txt')
+#import pstats
+#p = pstats.Stats('prof.txt')
+#p.sort_stats('cumulative').print_stats()
+
 #def main():
 ##    constr = r"Provider=SQLOLEDB.1;Initial Catalog=JXCDATA0002;Data Source=localhost;Integrated Security=SSPD;"
 #    constr = r"Provider=SQLOLEDB.1;Initial Catalog=JXCDATA0002;Data Source=localhost;user ID=sa;Password=52311"
