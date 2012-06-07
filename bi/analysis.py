@@ -187,7 +187,8 @@ class warehouse(Base, _warehouse):
     @classmethod
     def __doc_check(cls, doc):
         if doc.quantity < 1:
-            raise  Exception('Doc 错误')
+            raise Exception(u'单据数量小于1,单号:%s，类型:%s，数量:%s' %
+                   (doc.noteno, doc.notetype, doc.quantity))
 
     @classmethod
     def warein_check(cls, doc):
@@ -200,14 +201,14 @@ class warehouse(Base, _warehouse):
             quantity = item.quantity + doc.quantity
             if item.amount + amount < 0:
                 print (u'出现库存成本为负！单号:%s,商品:%s,库房:%s,数量:%.4f,成本:%.4f' %
-                                (doc.noteno, doc.product_id, doc.warehouse_id,quantity,item.amount+amount)).encode('utf-8')
+                                (doc.noteno, doc.product_id, doc.warehouse_id,quantity,item.amount+amount))
             if quantity == 0 and\
                 item.amount + amount <> 0:
                 print (u'出现库存为零成本不为零！单号:%s,商品:%s,库房:%s,数量:%.4f,成本:%.4f' %
-                       (doc.noteno, doc.product_id, doc.warehouse_id,quantity,item.amount+amount)).encode('utf-8')
+                       (doc.noteno, doc.product_id, doc.warehouse_id,quantity,item.amount+amount))
         elif doc.price < 0:
             print (u'库存没有商品,入库单价为负值：单号:%s,商品:%s,库房:%s' %
-                (doc.noteno, doc.product_id, doc.warehouse_id)).encode('utf-8')
+                (doc.noteno, doc.product_id, doc.warehouse_id))
 
     @classmethod
     def warein(cls, doc):

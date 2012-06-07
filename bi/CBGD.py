@@ -73,7 +73,6 @@ def qc():
                 from waresum where period = '%(period)s' and amount <> 0 group by wareno, houseno
         '''
         query = query % {'period':period}
-        query = query.encode('cp936')
         cur.execute(query)
         rows = cur.fetchall()
         for row in rows:
@@ -311,12 +310,8 @@ def dayWaremove(day):
                 stockMove(n)
                 save(i)
             except Exception, e:
-                try:
-                    print e.message
-                except :
-                    print e.message.encode('utf-8')
                 if i in errors:
-                    print (u'移库错误,%s', e.message).encode('utf-8')
+                    print (u'移库错误,%s' % e.message)
                 else:
                     errors.append(i)
                 analysis.session.rollback()
@@ -373,7 +368,7 @@ Session = sessionmaker(bind=engine)
 analysis.session = Session()
 analysis.metadata.create_all(bind=engine)
 
-#rollback(datetime.strptime('2011-06-09', '%Y-%m-%d'))
+#rollback(datetime.strptime('2011-10-20', '%Y-%m-%d'))
 #exit()
 
 sql = "select * from bi_jxc where notetype = 'QC' and computed=0"
@@ -427,6 +422,10 @@ def main():
 
     cur.close()
 
+import sys, codecs
+#sys.stdout = codecs.getwriter('utf-8')(sys.stdout)
+reload(sys)
+sys.setdefaultencoding("utf-8")
 main()
 #import profile
 #profile.run('main()','prof.txt')
