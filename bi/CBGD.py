@@ -1,6 +1,7 @@
 #coding=utf-8
 
 from datetime import datetime, timedelta
+from time import sleep
 from adodbapi import adodbapi
 import pyodbc
 import pymssql
@@ -121,8 +122,8 @@ def sales(noteno):
             docs.append(doc)
         for doc in docs:
             warehouse.wareout(doc)
-    except :
-        pass
+    except Exception, e:
+        raise Exception(u'记帐失败：%s;%s' % (noteno, e.message))
 
 def returnOfSales(noteno):
     sql = '''
@@ -315,8 +316,9 @@ def dayWaremove(day):
                 except :
                     print e.message.encode('utf-8')
                 if i in errors:
-                    raise Exception('移库错误,%s', e.message)
-                errors.append(i)
+                    print (u'移库错误,%s', e.message).encode('utf-8')
+                else:
+                    errors.append(i)
                 analysis.session.rollback()
                 _conn.rollback()
                 continue
@@ -327,16 +329,22 @@ def dayWareout(day):
     cur.execute(sql)
     rows = cur.fetchall()
     for row in rows:
-        n = row[0].strip()
-        t = row[1].strip()
-        i = row[2]
-        if t=='XS':
-            sales(n)
-        elif t=='XG':
-            salesChange(n)
-        elif t=='CT':
-            returnOfPurchase(n)
-        save(i)
+        try:
+            n = row[0].strip()
+            t = row[1].strip()
+            i = row[2]
+            if t=='XS':
+                sales(n)
+            elif t=='XG':
+                salesChange(n)
+            elif t=='CT':
+                returnOfPurchase(n)
+            save(i)
+        except Exception, e:
+            try:
+                print e.message
+            except :
+                print e.message.encode('utf-8')
 
 def rollback(backdate):
     analysis.rollback(backdate)
@@ -378,22 +386,44 @@ elif len(rows)>1:
 
 def main():
     last = warehouse_snap.getLast()
+    notedate = None
     if last:
         backdate = last + timedelta(days=1)
         rollback(backdate)
+        notedate = backdate
+
+    def charge(day):
+        dayWarein(day)
+        dayWaremove(day)
+        dayWareout(day)
+
     while 1:
         sql = "select min(notedate) from bi_jxc where computed=0"
+        if notedate:
+            sql += " and convert(varchar(10), notedate, 120) >= '%s'" % notedate.strftime('%Y-%m-%d')
         cur.execute(sql)
         row = cur.fetchone()
-        if not row:break
-        notedate = datetime.strftime(row[0], "%Y-%m-%d")
+        if not row:
+            sleep(10)
+            continue
 
-        dayWarein(notedate)
-        dayWaremove(notedate)
-        dayWareout(notedate)
+        day = datetime.strftime(row[0], "%Y-%m-%d")
+        print '\rcharging %s ...' % day,
+        charge(day)
+        print '\rcomplete %s.' % day,
+        notedate = row[0] + timedelta(days=1)
 
-
-        print '\r%s' % notedate,
+        # 处理小于notedate的未计算的单据
+        sql = "select notedate from bi_jxc where computed=0 \
+            and convert(varchar(10), notedate, 120)<'%s' \
+            order by notedate" % day
+        cur.execute(sql)
+        rows = cur.fetchall()
+        for row in rows:
+            print '\rsupplement %s...' % row[0],
+            day = datetime.strftime(row[0], "%Y-%m-%d")
+            charge(day)
+            print '\rsupplement complete.',
 
     cur.close()
 
