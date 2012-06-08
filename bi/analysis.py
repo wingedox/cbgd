@@ -277,7 +277,7 @@ class warehouse(Base, _warehouse):
         doc.out_cost = cost
         doc.out_profit = profit
         cls.wareouted(doc, item, cls.__items)
-        if item.quantity == 0:
+        if item.quantity == 0 and item.amount == 0:
             ''' 一张单据出库两条相同产品记录，第一条记录
             修改了item，后面的纪录正好使库存为零时需要删除库存，
             此时item还未commit，在delete时报错,因此改为先保存
@@ -642,9 +642,12 @@ def rollback(backdate):
     session.commit()
 
 def commit():
-    session.commit()
-    warehouse.delZeroStock()
-    session.commit()
+    try:
+        session.commit()
+        warehouse.delZeroStock()
+        session.commit()
+    except Exception, e:
+        print e.message
 
 #warehouse.wareouting += profit_journal.tally
 if __name__ == '__main__':

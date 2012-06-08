@@ -237,6 +237,9 @@ def stockMove(noteno, check=False):
     rows = cur.fetchall()
     if cur.rowcount==0:raise Exception
     for row in rows:
+        # 移库单明细有可能数量为零，跳过
+        if row[5] == 0:
+            continue
         old = row[2].strip()
         new = row[3].strip()
         if old in ('FX010101','FX01010103','FX01010104') and\
@@ -352,23 +355,24 @@ def rollback(backdate):
 _host = 'localhost'
 _pwd = '52311'
 _db = 'jxcdata0002'
-#_conn = pymssql.connect(host=_host,user='sa',password=_pwd,database=_db)
-constr = r"Provider=SQLOLEDB.1;Initial Catalog=%s;Data Source=%s;user ID=%s;Password=%s;"\
-    % (_db, _host, 'sa', _pwd)
-_conn = adodbapi.connect(constr)
+_conn = pymssql.connect(host=_host,user='sa',password=_pwd,database=_db)
+#constr = r"Provider=SQLOLEDB.1;Initial Catalog=%s;Data Source=%s;user ID=%s;Password=%s;"\
+#    % (_db, _host, 'sa', _pwd)
+#_conn = adodbapi.connect(constr)
 #_conn = pyodbc.connect('DRIVER={SQL Server};DATABASE=%s;SERVER=%s;UID=%s;PWD=%s'% (_db, _host, 'sa', _pwd))
 cur = _conn.cursor()
 
 #conn_bi = pymssql.connect(host=_host,user='sa',password=_pwd,database='bi')
 #cur_bi = conn_bi.cursor()
 
-s = 'mssql+pyodbc://sa:52311@localhost/bi'
+#s = 'mssql+pyodbc://sa:52311@localhost/bi'
+s = 'mssql+pymssql://sa:52311@localhost/bi'
 engine = create_engine(s, echo=False)
 Session = sessionmaker(bind=engine)
 analysis.session = Session()
 analysis.metadata.create_all(bind=engine)
 
-#rollback(datetime.strptime('2011-10-20', '%Y-%m-%d'))
+#rollback(datetime.strptime('2011-12-23', '%Y-%m-%d'))
 #exit()
 
 sql = "select * from bi_jxc where notetype = 'QC' and computed=0"
@@ -379,12 +383,14 @@ if len(rows)==1:
 elif len(rows)>1:
     raise Exception(u'不止一条期初数据!')
 
-def main():
+def main(rollback_day=False):
     last = warehouse_snap.getLast()
     notedate = None
     if last:
         backdate = last + timedelta(days=1)
-        rollback(backdate)
+        if rollback_day:
+            print "rollback to %s" % backdate.strftime('%Y-%m-%d')
+            rollback(backdate)
         notedate = backdate
 
     def charge(day):
@@ -398,7 +404,7 @@ def main():
             sql += " and convert(varchar(10), notedate, 120) >= '%s'" % notedate.strftime('%Y-%m-%d')
         cur.execute(sql)
         row = cur.fetchone()
-        if not row:
+        if not row[0]:
             sleep(10)
             continue
 
@@ -415,17 +421,20 @@ def main():
         cur.execute(sql)
         rows = cur.fetchall()
         for row in rows:
-            print '\rsupplement %s...' % row[0],
+            print '\rsupplement %s...' % row[0].strftime('%Y-%m-%d'),
             day = datetime.strftime(row[0], "%Y-%m-%d")
             charge(day)
             print '\rsupplement complete.',
 
     cur.close()
+# todo: 库存周转
+# todo：利润记账
+# todo：更正记账
 
-import sys, codecs
-#sys.stdout = codecs.getwriter('utf-8')(sys.stdout)
+import sys, decimal
 reload(sys)
 sys.setdefaultencoding("utf-8")
+decimal.getcontext().prec=19
 main()
 #import profile
 #profile.run('main()','prof.txt')
