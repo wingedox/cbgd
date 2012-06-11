@@ -2,10 +2,11 @@
 
 from datetime import datetime, timedelta
 from time import sleep
-from adodbapi import adodbapi
+#from adodbapi import adodbapi
 import pyodbc
-import pymssql
+#import pymssql
 from sqlalchemy.engine import create_engine
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm.session import sessionmaker
 from analysis import warehouse, warehouse_snap, note
 import analysis
@@ -13,17 +14,14 @@ import analysis
 __author__ = 'GaoJun'
 
 _conn = None
-cur = None
-conn_bi = None
-cur_bi = None
+_cur = None
+_inited = False
 
-computed_sql = "update bi_jxc set computed=1 where id=%s"
-def init():pass
-
+_computed_sql = "update bi_jxc set computed=1 where id=%s"
 def buildDoc(sql):
-    cur.execute(sql)
-    rows = cur.fetchall()
-    if cur.rowcount==0:raise Exception
+    _cur.execute(sql)
+    rows = _cur.fetchall()
+    if _cur.rowcount==0:raise Exception
     docs = []
     for r in rows:
         doc = {
@@ -42,21 +40,21 @@ def buildDoc(sql):
 
 def save(id):
     analysis.commit()
-    cur.execute(computed_sql % id)
+    _cur.execute(_computed_sql % id)
     _conn.commit()
 
 def qc():
     query = "select * from bi_jxc where notetype='QC' and computed=0"
-    cur.execute(query)
-    rows = cur.fetchall()
+    _cur.execute(query)
+    rows = _cur.fetchall()
     if len(rows)==1:
         query = "select uValue from uparameter where uSection = 'options' and uSymbol = 'beginmonth'"
-        cur.execute(query)
-        row = cur.fetchone()
+        _cur.execute(query)
+        row = _cur.fetchone()
         beginmonth = row[0].strip()
         query = "select uValue from uparameter where uSection = 'options' and uSymbol = 'beginyear'"
-        cur.execute(query)
-        row = cur.fetchone()
+        _cur.execute(query)
+        row = _cur.fetchone()
         beginyear = row[0].strip()
         if int(beginmonth) < 10 and beginmonth != '1':
             beginmonth = ' ' + str(int(beginmonth) - 1)
@@ -73,8 +71,8 @@ def qc():
                 from waresum where period = '%(period)s' and amount <> 0 group by wareno, houseno
         '''
         query = query % {'period':period}
-        cur.execute(query)
-        rows = cur.fetchall()
+        _cur.execute(query)
+        rows = _cur.fetchall()
         for row in rows:
             doc = {
                 'department_id':row['department'],
@@ -86,7 +84,7 @@ def qc():
             warehouse.warein(doc)
         analysis.session.commit()
         sql ="update bi_jxc set computed=1 where notetype='QC'"
-        cur.execute(sql)
+        _cur.execute(sql)
         _conn.commit()
 
 def sales(noteno):
@@ -100,8 +98,8 @@ def sales(noteno):
     WHERE rtrim(ltrim(h.noteno))='%s' AND m.noteno=h.noteno and h.saleman=e.code
     '''
     sql = sql % noteno
-    cur.execute(sql)
-    rows = cur.fetchall()
+    _cur.execute(sql)
+    rows = _cur.fetchall()
     docs = []
     try:
         for r in rows:
@@ -134,8 +132,8 @@ def returnOfSales(noteno):
     where h.noteno = m.noteno and h.saleman=e.code and h.noteno = '%s'
     '''
     sql = sql % noteno
-    cur.execute(sql)
-    rows = cur.fetchall()
+    _cur.execute(sql)
+    rows = _cur.fetchall()
     for r in rows:
         doc = note()
         doc.notedate = r[0]
@@ -161,8 +159,8 @@ def purchase(noteno):
     WHERE h.noteno=m.noteno and h.noteno='%s'
     '''
     sql = sql % noteno
-    cur.execute(sql)
-    rows = cur.fetchall()
+    _cur.execute(sql)
+    rows = _cur.fetchall()
     for r in rows:
         doc = note()
         doc.notedate = r[0]
@@ -189,8 +187,8 @@ def returnOfPurchase(noteno):
     WHERE h.noteno=m.noteno and h.noteno = '%s'
     '''
     sql = sql % noteno
-    cur.execute(sql)
-    rows = cur.fetchall()
+    _cur.execute(sql)
+    rows = _cur.fetchall()
     for r in rows:
         doc = note()
         doc.notedate = r[0]
@@ -233,9 +231,9 @@ def stockMove(noteno, check=False):
     from warealloth h, wareallotm m
     where h.noteno=m.noteno and h.noteno='%s'
     ''' % noteno
-    cur.execute(sql)
-    rows = cur.fetchall()
-    if cur.rowcount==0:raise Exception
+    _cur.execute(sql)
+    rows = _cur.fetchall()
+    if _cur.rowcount==0:raise Exception
     for row in rows:
         # 移库单明细有可能数量为零，跳过
         if row[5] == 0:
@@ -280,11 +278,20 @@ def stockMove(noteno, check=False):
             warehouse.wareout(doc_yc)
             warehouse.warein(doc_yr)
 
+def processQC():
+    sql = "select * from bi_jxc where notetype = 'QC' and computed=0"
+    _cur.execute(sql)
+    rows = _cur.fetchall()
+    if len(rows)==1:
+        qc()
+    elif len(rows)>1:
+        raise Exception(u'不止一条期初数据!')
+
 def dayWarein(day):
     sql = "select noteno, notetype, id from bi_jxc where notetype in ('CR','XT') and computed=0 and \
     CONVERT(varchar(10), notedate, 120)='%s'" % day
-    cur.execute(sql)
-    rows = cur.fetchall()
+    _cur.execute(sql)
+    rows = _cur.fetchall()
     for row in rows:
         n = row[0].strip()
         t = row[1].strip()
@@ -302,8 +309,8 @@ def dayWaremove(day):
     for j in range(2):
         sql = "select noteno, notetype, id from bi_jxc where notetype in ('YK') and computed=0 and \
         CONVERT(varchar(10), notedate, 120)='%s' order by notedate, noteno" % day
-        cur.execute(sql)
-        rows = cur.fetchall()
+        _cur.execute(sql)
+        rows = _cur.fetchall()
         for row in rows:
             n = row[0].strip()
             i = row[2]
@@ -324,8 +331,8 @@ def dayWaremove(day):
 def dayWareout(day):
     sql = "select noteno, notetype, id from bi_jxc where notetype in ('CT','XS') and computed=0 and \
     CONVERT(varchar(10), notedate, 120)='%s' order by notedate" % day
-    cur.execute(sql)
-    rows = cur.fetchall()
+    _cur.execute(sql)
+    rows = _cur.fetchall()
     for row in rows:
         try:
             n = row[0].strip()
@@ -339,151 +346,145 @@ def dayWareout(day):
                 returnOfPurchase(n)
             save(i)
         except Exception, e:
-            try:
-                print e.message
-            except :
-                print e.message.encode('utf-8')
+            print e.message
 
 def rollback(backdate):
     analysis.rollback(backdate)
     s = backdate.strftime('%Y-%m-%d')
     sql = "update bi_jxc set computed=0 "\
           "where CONVERT(varchar(10), notedate, 120)>='%s'" % s
-    cur.execute(sql)
+    _cur.execute(sql)
     _conn.commit()
+
+def initJXC():
+    script = None
+    try:
+        f = open('sql/Table_bi_jxc_drop_create.sql', 'r')
+        script = f.read()
+        f.close()
+        _cur.execute(script)
+        f = open('sql/Table_bi_jxc_copy.sql', 'r')
+        script = f.read()
+        f.close()
+        _cur.execute(script)
+        _conn.commit()
+        _inited = True
+    except Exception, e:
+        print e.message
+        exit()
+
+def copyJXC(startDay):
+    try:
+        f = open('sql/Table_bi_jxc_copy_day.sql', 'r')
+        script = f.read()
+        script = script % startDay.strftime('%Y-%m-%d')
+        _cur.execute(script)
+        _conn.commit()
+    except Exception, e:
+        print e.message
+
+def init():
+    print 'Init tables...',
+    initJXC()
+    analysis.metadata.drop_all(bind=_engine)
+    analysis.metadata.create_all(bind=_engine)
+    qc()
+    print 'Down.'
 
 _host = 'localhost'
 _pwd = '52311'
 _db = 'jxcdata0002'
-_conn = pymssql.connect(host=_host,user='sa',password=_pwd,database=_db)
+#_conn = pymssql.connect(host=_host,user='sa',password=_pwd,database=_db)
 #constr = r"Provider=SQLOLEDB.1;Initial Catalog=%s;Data Source=%s;user ID=%s;Password=%s;"\
 #    % (_db, _host, 'sa', _pwd)
 #_conn = adodbapi.connect(constr)
-#_conn = pyodbc.connect('DRIVER={SQL Server};DATABASE=%s;SERVER=%s;UID=%s;PWD=%s'% (_db, _host, 'sa', _pwd))
-cur = _conn.cursor()
-
+_conn = pyodbc.connect('DRIVER={SQL Server};DATABASE=%s;SERVER=%s;UID=%s;PWD=%s'% (
+    _db, _host, 'sa', _pwd))
+_cur = _conn.cursor()
 #conn_bi = pymssql.connect(host=_host,user='sa',password=_pwd,database='bi')
 #cur_bi = conn_bi.cursor()
 
-#s = 'mssql+pyodbc://sa:52311@localhost/bi'
-s = 'mssql+pymssql://sa:52311@localhost/bi'
-engine = create_engine(s, echo=False)
-Session = sessionmaker(bind=engine)
-analysis.session = Session()
-analysis.metadata.create_all(bind=engine)
+_s = 'mssql+pyodbc://sa:%s@localhost/%s' % (_pwd, _db)
+#s = 'mssql+pymssql://sa:52311@localhost/bi'
+_engine = create_engine(_s, echo=False)
+_Session = sessionmaker(bind=_engine, expire_on_commit=False)
+analysis.session = _Session()
+analysis.metadata.create_all(bind=_engine)
 
-#rollback(datetime.strptime('2011-12-23', '%Y-%m-%d'))
-#exit()
-
-sql = "select * from bi_jxc where notetype = 'QC' and computed=0"
-cur.execute(sql)
-rows = cur.fetchall()
-if len(rows)==1:
-    qc()
-elif len(rows)>1:
-    raise Exception(u'不止一条期初数据!')
-
-def main(rollback_day=False):
-    last = warehouse_snap.getLast()
+def main(rollback_day=True, Init=False):
+    last = None
+    if Init:
+        init()
+    else:
+        sql = "SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[bi_jxc]') " \
+              "AND type in (N'U')"
+        _cur.execute(sql)
+        row = _cur.fetchone()
+        if not (row and row[0]):
+            init()
+        else:
+            last = warehouse_snap.getLast()
     notedate = None
     if last:
         backdate = last + timedelta(days=1)
         if rollback_day:
-            print "rollback to %s" % backdate.strftime('%Y-%m-%d')
+            print "rollback to %s..." % backdate.strftime('%Y-%m-%d'),
             rollback(backdate)
+            print 'complete!'
         notedate = backdate
 
     def charge(day):
-        dayWarein(day)
-        dayWaremove(day)
-        dayWareout(day)
+        try:
+            dayWarein(day)
+            dayWaremove(day)
+            dayWareout(day)
+        except ProgrammingError, e:
+            print e.message.decode('gbk')
+            exit()
 
     while 1:
         sql = "select min(notedate) from bi_jxc where computed=0"
         if notedate:
             sql += " and convert(varchar(10), notedate, 120) >= '%s'" % notedate.strftime('%Y-%m-%d')
-        cur.execute(sql)
-        row = cur.fetchone()
+        _cur.execute(sql)
+        row = _cur.fetchone()
         if not row[0]:
             sleep(10)
+            copyJXC(notedate)
             continue
 
         day = datetime.strftime(row[0], "%Y-%m-%d")
-        print '\rcharging %s ...' % day,
+        print 'charging %s ...' % day,
         charge(day)
-        print '\rcomplete %s.' % day,
+        print 'complete!'
         notedate = row[0] + timedelta(days=1)
 
         # 处理小于notedate的未计算的单据
         sql = "select notedate from bi_jxc where computed=0 \
             and convert(varchar(10), notedate, 120)<'%s' \
             order by notedate" % day
-        cur.execute(sql)
-        rows = cur.fetchall()
+        _cur.execute(sql)
+        rows = _cur.fetchall()
         for row in rows:
-            print '\rsupplement %s...' % row[0].strftime('%Y-%m-%d'),
+            print '\tsupplement %s...' % row[0].strftime('%Y-%m-%d'),
             day = datetime.strftime(row[0], "%Y-%m-%d")
             charge(day)
-            print '\rsupplement complete.',
+            print 'complete!'
 
-    cur.close()
+    _cur.close()
 # todo: 库存周转
 # todo：利润记账
 # todo：更正记账
+# todo: 移库不记out
+# todo：销售退回冲减利润
+# todo：修改为记明细帐再记库存
 
-import sys, decimal
-reload(sys)
-sys.setdefaultencoding("utf-8")
-decimal.getcontext().prec=19
+#rollback(datetime.strptime('2011-04-20', '%Y-%m-%d'))
+#exit()
+#main(Init=True)
 main()
 #import profile
-#profile.run('main()','prof.txt')
+#profile.run('main()','p rof.txt')
 #import pstats
 #p = pstats.Stats('prof.txt')
 #p.sort_stats('cumulative').print_stats()
-
-#def main():
-##    constr = r"Provider=SQLOLEDB.1;Initial Catalog=JXCDATA0002;Data Source=localhost;Integrated Security=SSPD;"
-#    constr = r"Provider=SQLOLEDB.1;Initial Catalog=JXCDATA0002;Data Source=localhost;user ID=sa;Password=52311"
-#    conn = adodbapi.connect(constr)
-#
-#    sql = '''
-#    select top 10
-#        SUBSTRING(h.custno,1,2) as department_id,
-#        h.noteno,h.notedate,m.wareno,h.custno,
-#        m.price,m.amount,h.houseno,h.saleman
-#    from WAREOUTH h, WAREOUTM m
-#    WHERE h.noteno=m.noteno and
-#        (h.tag = 1) AND
-#        (h.type0 = '01' OR h.type0 = '05')
-#    '''
-#    sql='''
-#    select DEPARTMENT, noteno, notedate, wareno,
-#        partnerno, price, amount, houseno, saleman, type, id
-#    from bi_jxc
-#    where wareno <> '31016666' and computed = 0
-#    order by notedate
-#    '''
-#    c = conn.cursor()
-#    c.execute(sql)
-#    rows = c.fetchall()
-#    sql = 'update bi_jxc set computed=1 where id = %s'
-#    for r in rows:
-#        doc = {'department_id':r[0].strip().encode('utf-8'),
-#               'doc_id': r[1].strip().encode('utf-8'),
-#               'notedate': r[2],
-#               'product_id': r[3].strip().encode('utf-8'),
-#               'customer_id': r[4].strip().encode('utf-8'),
-#               'price': abs(r[5]),
-#               'quatity': abs(r[6]),
-#               'warehouse_id': r[7].strip().encode('utf-8'),
-#               'sales_id':r[8] and r[8].strip().encode('utf-8')}
-#        t = r[9].strip().encode('utf-8')
-#        if t in ('CR','XT'):
-#            warehouse.warein(**doc)
-#        elif t in ('XS','CT'):
-#            warehouse.wareout(**doc)
-#        session.commit()
-#        c.execute(sql % r[10])
-#        conn.commit()
-#    c.close()

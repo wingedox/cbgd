@@ -1,8 +1,4 @@
 delete bi_jxc
-
-update JXCDATA0002..WAREOUTH set notedate='2011-08-04 12:00:00'
-where noteno='X108010302'
-
 insert bi_jxc (account, dbname, 
 	notetype, notedate, noteno, updatedate, computed) values
 	('JXC','jxcdata0002','QC','2011-3-31','00000'

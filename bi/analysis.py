@@ -14,7 +14,7 @@ __author__ = 'GaoJun'
 
 session = None
 metadata = MetaData()
-Base = declarative_base(metadata=metadata)
+_Base = declarative_base(metadata=metadata)
 
 class Event(object):
     __handler = {}
@@ -68,6 +68,16 @@ class note(object):
         self.notetype = None
         self.out_profit = None
 
+    def __str(self, key_dict):
+        k = '%s&%s&%s' % (
+            key_dict['department_id'],
+            key_dict['warehouse_id'],
+            key_dict['product_id']
+        )
+        if key_dict.has_key('stamp'):
+            k = '%s&%s' % (k, key_dict['stamp'])
+        return k
+
     def __key(self):
         # 使用adodbapi时返回的数据编码是unicode,str()后
         # 字串形式为u'abc'，导致key不正确
@@ -81,7 +91,7 @@ class note(object):
             self.product_id.encode('utf-8') or\
             self.product_id
         return {
-            'department':d,
+            'department_id':d,
             'warehouse_id':w,
             'product_id':p
         }
@@ -94,7 +104,7 @@ class note(object):
         k = self.__key()
         k['stamp'] = isinstance(self.stamp, unicode) and\
                      self.stamp.encode('utf-8') or self.stamp
-        return str(k)
+        return self.__str(k)
 
     @classmethod
     def __getNote(cls, stock):
@@ -116,6 +126,34 @@ class note(object):
         doc = cls.__getNote(stock)
         return doc.stamp_key
 
+    @classmethod
+    def getNoteByKey(cls, key):
+        doc = cls()
+        values = key.split('&')
+        doc.department_id = values[0]
+        doc.warehouse_id = values[1]
+        doc.product_id = values[2]
+        if len(values) == 4:
+            doc.stamp = values[3]
+        return doc
+
+    @classmethod
+    def getKeyByStackDate(cls, date, stock):
+        doc = cls.__getNote(stock)
+        k = doc.__key()
+        stamp = cls.dateToStamp(date)
+        k['stamp'] = stamp
+        return doc.__str(k)
+
+    @classmethod
+    def dateToStamp(cls, date):
+        stamp = None
+        if isinstance(date, datetime):
+            stamp = date.strftime('%Y-%m-%d')
+        else:
+            stamp = isinstance(date, unicode) and\
+                    date.encode('utf-8') or date
+        return stamp
 class _warehouse(_orm_base):
     department_id = Column(String(20))
     warehouse_id = Column(String(20))
@@ -131,8 +169,8 @@ class _warehouse(_orm_base):
     last_in_date = Column(DateTime)
     last_out_date = Column(DateTime)
 
-class warehouse(Base, _warehouse):
-    __tablename__ = 'warehouse'
+class warehouse(_Base, _warehouse):
+    __tablename__ = 'bi_warehouse'
 
     wareined = Event()
     wareining = Event()
@@ -168,16 +206,26 @@ class warehouse(Base, _warehouse):
         return k
 
     @classmethod
-    def __checkDate(cls, stamp):
+    def __checkStock(cls, stamp):
         cls.__currDate = cls.__currDate or stamp
         if cls.__currDate<>stamp:
-            for item in cls.__items.values():
+            for key, item in cls.__items.items():
                 item.today_in = Decimal()
                 item.today_out = Decimal()
                 item.today_profit = Decimal()
                 item.today_out_cost = Decimal()
                 item.stamp = stamp
+                cls.__checkZeroStock(key, item)
+            session.commit()
             cls.__currDate = stamp
+
+    @classmethod
+    def __checkZeroStock(cls, key, item):
+        # 删除不用的库存（数量和成本为零，今天没有出入库的产品）
+        if item.quantity == 0 and item.amount == 0 and\
+           item.today_in == 0 and item.today_out == 0:
+            session.delete(item)
+            del cls.__items[key]
 
     @classmethod
     def getStock(cls, key):
@@ -191,7 +239,7 @@ class warehouse(Base, _warehouse):
                    (doc.noteno, doc.notetype, doc.quantity))
 
     @classmethod
-    def warein_check(cls, doc):
+    def warein_check(cls, doc, out_error=True):
         cls.__doc_check(doc)
         if not cls.__inited:cls.__init()
         key = doc.key
@@ -199,27 +247,27 @@ class warehouse(Base, _warehouse):
         if item:
             amount = doc.price * doc.quantity
             quantity = item.quantity + doc.quantity
-            if item.amount + amount < 0:
+            if item.amount + amount < 0 and out_error:
                 print (u'出现库存成本为负！单号:%s,商品:%s,库房:%s,数量:%.4f,成本:%.4f' %
                                 (doc.noteno, doc.product_id, doc.warehouse_id,quantity,item.amount+amount))
             if quantity == 0 and\
-                item.amount + amount <> 0:
+                item.amount + amount <> 0 and out_error:
                 print (u'出现库存为零成本不为零！单号:%s,商品:%s,库房:%s,数量:%.4f,成本:%.4f' %
                        (doc.noteno, doc.product_id, doc.warehouse_id,quantity,item.amount+amount))
-        elif doc.price < 0:
+        elif doc.price < 0 and out_error:
             print (u'库存没有商品,入库单价为负值：单号:%s,商品:%s,库房:%s' %
                 (doc.noteno, doc.product_id, doc.warehouse_id))
 
     @classmethod
     def warein(cls, doc):
         if not cls.__inited:cls.__init()
-        cls.warein_check(doc)
+        cls.warein_check(doc, False)
+        stamp = doc.notedate.strftime('%Y-%m-%d')
+        cls.__checkStock(stamp)
+
         key = doc.key
         item = cls.__items.get(key)
         cls.wareining(doc, item, cls.__items)
-
-        stamp = doc.notedate.strftime('%Y-%m-%d')
-        cls.__checkDate(stamp)
         if not item:
             item = cls()
             item.department_id = doc.department_id
@@ -239,7 +287,11 @@ class warehouse(Base, _warehouse):
         item.quantity += doc.quantity
         item.amount += amount
         item.last_in_date = doc.notedate
-        item.today_in += doc.quantity
+        if doc.notetype == 'CR':
+            item.today_in += doc.quantity
+        elif doc.notetype == 'XT':
+            item.today_out -= doc.quantity
+#            item.today_profit =
         item.price = item.amount / item.quantity
         cls.wareined(doc, item, cls.__items)
 
@@ -259,16 +311,20 @@ class warehouse(Base, _warehouse):
     @classmethod
     def wareout(cls, doc):
         if not cls.__inited:cls.__init()
-        key = doc.key
-        item = cls.__items.get(key)
         cls.wareout_check(doc)
-
-        cls.wareouting(doc, item, cls.__items)
+        key = doc.key
         stamp = doc.notedate.strftime('%Y-%m-%d')
-        cls.__checkDate(stamp)
-        item.quantity -= doc.quantity
+        # 一定要在这个位置，因为__checkStock会删除零库存
+        cls.__checkStock(stamp)
+
+        item = cls.__items.get(key)
+        cls.wareouting(doc, item, cls.__items)
         cost = doc.quantity * item.price
+        # 0库存将成本置0，要不然0数量成本不为零的库存会很多
+        if item.quantity - doc.quantity == 0:
+            cost = item.amount
         profit = doc.quantity * doc.price - cost
+        item.quantity -= doc.quantity
         item.amount -= cost
         item.last_out_date = doc.notedate
         item.today_out += doc.quantity
@@ -277,26 +333,14 @@ class warehouse(Base, _warehouse):
         doc.out_cost = cost
         doc.out_profit = profit
         cls.wareouted(doc, item, cls.__items)
-        if item.quantity == 0 and item.amount == 0:
-            ''' 一张单据出库两条相同产品记录，第一条记录
-            修改了item，后面的纪录正好使库存为零时需要删除库存，
-            此时item还未commit，在delete时报错,因此改为先保存
-            在__zeroStocks 中，commit时删除'''
-            cls.__zeroStcoks.append(item)
-            del cls.__items[key]
 
+    @classmethod
     def costChange(cls,  department_id, product_id, warehouse_id, changeValue):
         s = cls.getStock(department_id, product_id, warehouse_id)
         if not s:
             raise Exception
         s.amount += changeValue
         s.price = s.amount / s.quantity
-
-    @classmethod
-    def delZeroStock(cls):
-        for item in cls.__zeroStcoks:
-            session.delete(item)
-            cls.__zeroStcoks.remove(item)
 
     @classmethod
     def rollback(cls, backdate):
@@ -308,15 +352,16 @@ class warehouse(Base, _warehouse):
             stock = warehouse_snap.snapToStock(snap)
             session.add(stock)
 
-class warehouse_snap(Base, _warehouse):
-    __tablename__ = 'warehouse_snap'
+class warehouse_snap(_Base, _warehouse):
+    __tablename__ = 'bi_warehouse_snap'
     w1_in = Column(Numeric)
     w1_out = Column(Numeric)
     w1_out_cost = Column(Numeric(19,4))
     w1_profit = Column(Numeric(19,4))
     w1_stock_product = Column(Numeric)
     w1_stock_days = Column(Numeric)
-    w1_trunover = Column(Numeric(19,4))
+    w1_turnover = Column(Numeric(19,4))
+    w1_sale_forecast = Column(Numeric(19,4))
 
     w2_in = Column(Numeric)
     w2_out = Column(Numeric)
@@ -324,7 +369,8 @@ class warehouse_snap(Base, _warehouse):
     w2_profit = Column(Numeric(19,4))
     w2_stock_product = Column(Numeric)
     w2_stock_days = Column(Numeric)
-    w2_trunover = Column(Numeric(19,4))
+    w2_turnover = Column(Numeric(19,4))
+    w2_sale_forecast = Column(Numeric(19,4))
 
     w4_in = Column(Numeric)
     w4_out = Column(Numeric)
@@ -332,7 +378,8 @@ class warehouse_snap(Base, _warehouse):
     w4_profit = Column(Numeric(19,4))
     w4_stock_product = Column(Numeric)
     w4_stock_days = Column(Numeric)
-    w4_trunover = Column(Numeric(19,4))
+    w4_turnover = Column(Numeric(19,4))
+    w4_sale_forecast = Column(Numeric(19,4))
 
     __last = None
     __items = {}
@@ -346,13 +393,12 @@ class warehouse_snap(Base, _warehouse):
         s = max_stamp[0]
         if s:
             m = datetime.strptime(s, '%Y-%m-%d')
-            cls.__last = datetime.strptime(s, '%Y-%m-%d')
-            for i in range(28):
-                stamp = m.strftime('%Y-%m-%d')
-                for item in session.query(cls).filter(cls.stamp == stamp):
-                    k = note.getStampKeyByStock(item)
-                    cls.__items[k] = item
-                m += timedelta(days=-(i+1))
+            # 缓存过去4周每天的库存
+            s_stamp = (m + timedelta(days=-27)).strftime('%Y-%m-%d')
+            cls.__last = m
+            for item in session.query(cls).filter(cls.stamp >= s_stamp):
+                k = note.getStampKeyByStock(item)
+                cls.__items[k] = item
         cls.__inited = True
 
     @classmethod
@@ -368,28 +414,24 @@ class warehouse_snap(Base, _warehouse):
     def __getSnaps(cls, item, days):
         items = []
         curr = datetime.strptime(item.stamp, '%Y-%m-%d')
-        for i in range(days):
-            new = curr + timedelta(days=i+1)
-            new = new.strftime('%Y-%m-%d')
-            k = str({
-                'stamp':new,
-                'department_id':item.department_id,
-                'product_id':item.product_id,
-                'warehouse_id':item.warehouse_id
-            })
+        items.append(item)
+        for i in range(days-1):
+            curr = curr + timedelta(days=-1)
+            k = note.getKeyByStackDate(curr, item)
             o = cls.__items.get(k)
             if o:
                 items.append(o)
         return items
+
     @classmethod
     def __getW1Snaps(cls, item):
-        return cls.__getSnaps(item, 6)
+        return cls.__getSnaps(item, 7)
     @classmethod
     def __getW2Snaps(cls, item):
-        return cls.__getSnaps(item, 13)
+        return cls.__getSnaps(item, 14)
     @classmethod
     def __getW4Snaps(cls, item):
-        return cls.__getSnaps(item, 27)
+        return cls.__getSnaps(item, 28)
 
     @classmethod
     def __setStockSnap(cls, item):
@@ -407,7 +449,9 @@ class warehouse_snap(Base, _warehouse):
             w_out_cost += d.today_out_cost
             w_profit += d.today_profit
             w_stock_product += d.quantity
-            w_stock_days += 1
+            if d.quantity<>0 or d.today_in<>0 or \
+                d.today_out<>0:
+                w_stock_days += 1
 
         item.w1_in = w_in
         item.w1_out = w_out
@@ -415,6 +459,9 @@ class warehouse_snap(Base, _warehouse):
         item.w1_profit = w_profit
         item.w1_stock_product = w_stock_product
         item.w1_stock_days = w_stock_days
+        if w_out:
+            item.w1_turnover = w_stock_product/w_out
+            item.w1_sale_forecast = item.quantity * w_stock_days / w_out
 
         items = cls.__getW2Snaps(item)
         w_in = Decimal()
@@ -438,6 +485,9 @@ class warehouse_snap(Base, _warehouse):
         item.w2_profit = w_profit
         item.w2_stock_product = w_stock_product
         item.w2_stock_days = w_stock_days
+        if w_out:
+            item.w2_turnover = w_stock_product/w_out
+            item.w2_sale_forecast = item.quantity * w_stock_days / w_out
 
         items = cls.__getW4Snaps(item)
         w_in = Decimal()
@@ -461,6 +511,17 @@ class warehouse_snap(Base, _warehouse):
         item.w4_profit = w_profit
         item.w4_stock_product = w_stock_product
         item.w4_stock_days = w_stock_days
+        if w_out:
+            item.w4_turnover = w_stock_product/w_out
+            item.w4_sale_forecast = item.quantity * w_stock_days / w_out
+
+    @classmethod
+    def __delSnap(cls, currdate):
+        start = currdate + timedelta(days=-28)
+        stamp = note.dateToStamp(start)
+        for key in cls.__items.keys():
+            if stamp in key:
+                cls.__items.pop(key)
 
     @classmethod
     def __do_stock_snap(cls, stockdate, stock):
@@ -480,19 +541,12 @@ class warehouse_snap(Base, _warehouse):
         item.today_out = stock.today_out
         item.today_out_cost = stock.today_out_cost
         item.today_profit = stock.today_profit
-        session.add(item) # 准备保存
         cls.__setStockSnap(item) # 计算并设置字段值
+        k = note.getKeyByStackDate(stockdate, item)
+        cls.__items[k] = item
+        session.add(item) # 准备保存
         # 去掉缓存中的4周前的快照记录
-        new = stockdate + timedelta(days=-28)
-        new = new.strftime('%Y-%m-%d')
-        k = str({
-            'stamp':new,
-            'department_id':item.department_id,
-            'product_id':item.product_id,
-            'warehouse_id':item.warehouse_id
-        })
-        if cls.__items.has_key(k):
-            cls.__items.pop(k)
+        cls.__delSnap(stockdate)
 
     @classmethod
     def __do_snap(cls, currdate, stocks):
@@ -506,11 +560,6 @@ class warehouse_snap(Base, _warehouse):
         if cls.__last >= last_stamp:return
         # 插入没有业务记录的库存快照
         cls.__insert_stamp(curr, stocks)
-#        # 逐条将当前库存做快照
-#        for stock in stocks.values():
-#            cls.__do_stock_snap(curr, stock)
-        # 补充缺少天的库存快照后最后日期为当前日期
-        #cls.__last = curr
 
     @classmethod
     def snapToStock(cls, snap):
@@ -548,8 +597,8 @@ class warehouse_snap(Base, _warehouse):
 warehouse.wareining += warehouse_snap.do_snap
 warehouse.wareouting += warehouse_snap.do_snap
 
-class ware_journal(Base, _orm_base):
-    __tablename__ = 'ware_journal'
+class ware_journal(_Base, _orm_base):
+    __tablename__ = 'bi_ware_journal'
 
     doc_id = Column(String(20))
     doc_type = Column(String(10))
@@ -606,7 +655,7 @@ class ware_journal(Base, _orm_base):
 warehouse.wareined += ware_journal.charge
 warehouse.wareouted += ware_journal.charge
 
-class profit_journal(Base, _orm_base):
+class profit_journal(_Base, _orm_base):
     __tablename__ = 'profit_journal'
 
     department_id = Column(String(20))
@@ -644,52 +693,10 @@ def rollback(backdate):
 def commit():
     try:
         session.commit()
-        warehouse.delZeroStock()
-        session.commit()
     except Exception, e:
         print e.message
 
-#warehouse.wareouting += profit_journal.tally
-if __name__ == '__main__':
-#    global session
-    s = 'sqlite:///:memory:'
-    s = 'mssql+pymssql://sa:52311@localhost/bi'
-    engine = create_engine(s, echo=False)
-    Session = sessionmaker(bind=engine)
-    session = Session()
-    metadata.create_all(bind=engine)
-
-    exit()
-
-    keys = ['notedate','department_id', 'product_id', 'warehouse_id',
-     'quantity', 'price', 'amount', 'sales_id', 'customer_id', 'doc_id']
-    doc1 = dict(zip(keys,[datetime.strptime('2011-12-20 12:12:23', '%Y-%m-%d %H:%M:%S'),
-                          '001','1','1',2,100,200,'1','1','1']))
-    doc2 = dict(zip(keys,[datetime.strptime('2011-12-25 12:12:23', '%Y-%m-%d %H:%M:%S'),
-                          '001','1','1',3,200,600,'1','1','1']))
-    doc3 = dict(zip(keys,[datetime.strptime('2011-12-31 12:12:23', '%Y-%m-%d %H:%M:%S'),
-                          '001','1','1',3,200,600,'1','1','1']))
-
-    warehouse.warein(**doc1)
-    session.commit()
-    warehouse.warein(**doc2)
-    session.commit()
-#    warehouse.wareout(**doc1)
-#    session.commit()
-    warehouse.wareout(**doc3)
-    session.commit()
-
-    for i in session.query(warehouse):
-        for k in ['department_id', 'product_id', 'warehouse_id',
-                  'quantity', 'price', 'amount']:
-            print k, ':', getattr(i, k)
-
-    for i in session.query(warehouse_snap):
-        for k in ['stamp', 'department_id', 'product_id',  'quantity', 'in_today', 'out_today']:
-            print k, ':', getattr(i, k)
-
-    for i in session.query(profit_journal):
-        for k in ['department_id', 'product_id',  'quantity', 'profit', 'rate']:
-            print k, ':', getattr(i, k)
-
-
+import sys, decimal
+reload(sys)
+sys.setdefaultencoding("utf-8")
+decimal.getcontext().prec = 18
