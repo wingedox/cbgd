@@ -5,7 +5,7 @@ insert bi_jxc (account, dbname,
 	,getdate(),0)
 insert into bi_jxc 
 select 'JXC' as account, 'jxcdata0002' as dbname, notetype, 
-	notedate, noteno, GETDATE() as UpdateDate, 0 as computed
+	notedate, noteno, GETDATE() as UpdateDate, NULL as ChargeDate, 0 as computed
 from (
 -- œ˙ €ÕÀªÿ
 SELECT DISTINCT notedate, h.noteno, 'XT' as notetype

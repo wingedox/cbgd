@@ -87,7 +87,7 @@ def qc():
         _cur.execute(sql)
         _conn.commit()
 
-def sales(noteno):
+def sales(noteno, chargedate=None):
     # ltrim(h.noteno) 自编号的单据号可能被人为在前加入空格，noteno已经去掉前后空格，导致查询为空
     sql = u'''
     SELECT h.notedate, RTRIM(h.noteno) as noteno, SUBSTRING(h.houseno,1,2) as department,
@@ -115,6 +115,7 @@ def sales(noteno):
             doc.price = r[8]
             doc.amount = r[9]
             doc.notetype = 'XS'
+            doc.chargedate = chargedate or doc.notedate
             warehouse.wareout_check(doc)
             docs.append(doc)
         for doc in docs:
@@ -122,7 +123,7 @@ def sales(noteno):
     except Exception, e:
         raise Exception(u'记帐失败：%s;%s' % (noteno, e.message))
 
-def returnOfSales(noteno):
+def returnOfSales(noteno, chargedate=None):
     sql = '''
     SELECT h.notedate, m.noteno, SUBSTRING(houseno,1,2) as department, h.custno as partnerno,
     case when h.houseno in ('FX010101','FX01010103','FX01010104')
@@ -147,9 +148,10 @@ def returnOfSales(noteno):
         doc.price = r[8]
         doc.amount = r[9]
         doc.notetype = 'XT'
+        doc.chargedate = chargedate or doc.notedate
         warehouse.warein(doc)
 
-def purchase(noteno):
+def purchase(noteno, chargedate=None):
     sql = '''
     SELECT h.notedate, h.noteno, SUBSTRING(h.houseno,1,2) as department,
     h.provno as partnerno, case when h.houseno in ('FX010101','FX01010103','FX01010104')
@@ -174,9 +176,10 @@ def purchase(noteno):
         doc.price = r[8]
         doc.amount = r[9]
         doc.notetype = 'CR'
+        doc.chargedate = chargedate or doc.notedate
         warehouse.warein(doc)
 
-def returnOfPurchase(noteno):
+def returnOfPurchase(noteno, chargedate=None):
     sql = '''
     SELECT h.notedate, h.noteno, SUBSTRING(h.houseno,1,2) as department, h.provno as partnerno,
     case when h.houseno in ('FX010101','FX01010103','FX01010104')
@@ -202,11 +205,12 @@ def returnOfPurchase(noteno):
         doc.price = r[8]
         doc.amount = r[9]
         doc.notetype = 'CT'
+        doc.chargedate = chargedate or doc.notedate
         warehouse.wareout(doc)
 
-def salesChange(noteno):pass
+def salesChange(noteno, chargedate=None):pass
 
-def costChange(noteno):
+def costChange(noteno, chargedate=None):
     sql = '''
     SELECT h.notedate, h.noteno, SUBSTRING(h.houseno,1,2) as department,
     h.provno as partnerno, case when h.houseno in ('FX010101','FX01010103','FX01010104')
@@ -221,9 +225,9 @@ def costChange(noteno):
             doc['wareno'], doc['houseno'], doc['curr'])
 
 def checkMove(noteno):
-    stockMove(noteno, True)
+    stockMove(noteno, None, True)
 
-def stockMove(noteno, check=False):
+def stockMove(noteno, chargedate=None, check=False):
     sql = '''
     select h.noteno, h.notedate, h.oldhouseno, h.newhouseno,
         m.wareno, m.amount, substring(h.oldhouseno,1,2) as olddept,
@@ -255,6 +259,7 @@ def stockMove(noteno, check=False):
         doc_yc.product_id = row[4].strip()
         doc_yc.quantity = row[5]
         doc_yc.notetype = 'YC'
+        doc_yc.chargedate = chargedate or doc_yc.notedate
         s = warehouse.getStock(doc_yc.key)
         if not s:
             raise Exception(u'没有库存。%s,%s,%s' % (doc_yc.noteno, doc_yc.product_id,doc_yc.warehouse_id))
@@ -270,6 +275,7 @@ def stockMove(noteno, check=False):
         doc_yr.product_id = row[4].strip()
         doc_yr.quantity = row[5]
         doc_yr.notetype = 'YR'
+        doc_yr.chargedate = chargedate or doc_yr.notedate
         doc_yr.price = s.price
         doc_yr.amount = doc_yr.quantity * doc_yr.price
         warehouse.warein_check(doc_yr)
@@ -287,7 +293,7 @@ def processQC():
     elif len(rows)>1:
         raise Exception(u'不止一条期初数据!')
 
-def dayWarein(day):
+def dayWarein(day, chargedate=None):
     sql = "select noteno, notetype, id from bi_jxc where notetype in ('CR','XT') and computed=0 and \
     CONVERT(varchar(10), notedate, 120)='%s'" % day
     _cur.execute(sql)
@@ -297,12 +303,12 @@ def dayWarein(day):
         t = row[1].strip()
         i = row[2]
         if t=='XT':
-            returnOfSales(n)
+            returnOfSales(n, chargedate)
         elif t=='CR':
-            purchase(n)
+            purchase(n, chargedate)
         save(i)
 
-def dayWaremove(day):
+def dayWaremove(day, chargedate=None):
     # 对于移出库库房没有负库存限制，可能先由A库移到B库，此时A库为负库存
     # 再由C库移到A库。
     errors = []
@@ -317,7 +323,7 @@ def dayWaremove(day):
             try:
                 # 先检查该移库单所有条目是否都能通过
                 checkMove(n)
-                stockMove(n)
+                stockMove(n, chargedate)
                 save(i)
             except Exception, e:
                 if i in errors:
@@ -328,7 +334,7 @@ def dayWaremove(day):
                 _conn.rollback()
                 continue
 
-def dayWareout(day):
+def dayWareout(day, chargedate=None):
     sql = "select noteno, notetype, id from bi_jxc where notetype in ('CT','XS') and computed=0 and \
     CONVERT(varchar(10), notedate, 120)='%s' order by notedate" % day
     _cur.execute(sql)
@@ -339,11 +345,11 @@ def dayWareout(day):
             t = row[1].strip()
             i = row[2]
             if t=='XS':
-                sales(n)
+                sales(n, chargedate)
             elif t=='XG':
-                salesChange(n)
+                salesChange(n, chargedate)
             elif t=='CT':
-                returnOfPurchase(n)
+                returnOfPurchase(n, chargedate)
             save(i)
         except Exception, e:
             print e.message
@@ -351,8 +357,8 @@ def dayWareout(day):
 def rollback(backdate):
     analysis.rollback(backdate)
     s = backdate.strftime('%Y-%m-%d')
-    sql = "update bi_jxc set computed=0 "\
-          "where CONVERT(varchar(10), notedate, 120)>='%s'" % s
+    sql = "update bi_jxc set computed=0, ChargeDate=NULL "\
+          "where ChargeDate>='%s'" % s
     _cur.execute(sql)
     _conn.commit()
 
@@ -424,52 +430,52 @@ def main(rollback_day=True, Init=False):
             init()
         else:
             last = warehouse_snap.getLast()
-    notedate = None
+    chargedate = None
     if last:
         backdate = last + timedelta(days=1)
         if rollback_day:
             print "rollback to %s..." % backdate.strftime('%Y-%m-%d'),
             rollback(backdate)
             print 'complete!'
-        notedate = backdate
+        chargedate = backdate
 
-    def charge(day):
+    def charge(day, chargedate=None):
         try:
-            dayWarein(day)
-            dayWaremove(day)
-            dayWareout(day)
+            dayWarein(day, chargedate)
+            dayWaremove(day, chargedate)
+            dayWareout(day, chargedate)
         except ProgrammingError, e:
             print e.message.decode('gbk')
             exit()
 
     while 1:
         sql = "select min(notedate) from bi_jxc where computed=0"
-        if notedate:
-            sql += " and convert(varchar(10), notedate, 120) >= '%s'" % notedate.strftime('%Y-%m-%d')
+        if chargedate:
+            sql += " and convert(varchar(10), notedate, 120) >= '%s'" % chargedate.strftime('%Y-%m-%d')
         _cur.execute(sql)
         row = _cur.fetchone()
         if not row[0]:
             sleep(10)
-            copyJXC(notedate)
+            copyJXC(chargedate)
             continue
 
         day = datetime.strftime(row[0], "%Y-%m-%d")
         print 'charging %s ...' % day,
         charge(day)
         print 'complete!'
-        notedate = row[0] + timedelta(days=1)
 
         # 处理小于notedate的未计算的单据
         sql = "select notedate from bi_jxc where computed=0 \
-            and convert(varchar(10), notedate, 120)<'%s' \
+            and convert(varchar(10), notedate, 120) < '%s' \
             order by notedate" % day
         _cur.execute(sql)
         rows = _cur.fetchall()
         for row in rows:
             print '\tsupplement %s...' % row[0].strftime('%Y-%m-%d'),
             day = datetime.strftime(row[0], "%Y-%m-%d")
-            charge(day)
+            charge(day, chargedate)
             print 'complete!'
+        chargedate = row[0] + timedelta(days=1)
 
     _cur.close()
 # todo: 库存周转
@@ -478,11 +484,12 @@ def main(rollback_day=True, Init=False):
 # todo: 移库不记out
 # todo：销售退回冲减利润
 # todo：修改为记明细帐再记库存
+# todo: rollback 到某天比如8月4日，但原来8月4日补记了8月2日的一张单据，此时8月2日那张单据已经标记为已记帐
 
-#rollback(datetime.strptime('2011-04-20', '%Y-%m-%d'))
+#rollback(datetime.strptime('2011-08-01', '%Y-%m-%d'))
 #exit()
-#main(Init=True)
-main()
+main(Init=True)
+#main()
 #import profile
 #profile.run('main()','p rof.txt')
 #import pstats

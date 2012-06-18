@@ -67,6 +67,7 @@ class note(object):
         self.partner_id = None
         self.notetype = None
         self.out_profit = None
+        self.chargedate = None
 
     def __str(self, key_dict):
         k = '%s&%s&%s' % (
@@ -146,7 +147,7 @@ class note(object):
         return doc.__str(k)
 
     @classmethod
-    def dateToStamp(cls, date):
+    def toStamp(cls, date):
         stamp = None
         if isinstance(date, datetime):
             stamp = date.strftime('%Y-%m-%d')
@@ -154,6 +155,272 @@ class note(object):
             stamp = isinstance(date, unicode) and\
                     date.encode('utf-8') or date
         return stamp
+
+    @classmethod
+    def toDate(cls, stamp):
+        date = None
+        if isinstance(stamp, datetime):
+            date = stamp
+        else:
+            date = datetime.strptime(stamp, '%Y-%m-%d')
+        return date
+
+class w4Snap(object):
+    """
+    管理一个库房里的一个产品28天的历史库存
+    """
+    def __init__(self):
+        self.w1 = []
+        self.w2 = []
+        self.w4 = []
+        self.currDate = None
+        self.w1_in = Decimal()
+        self.w1_out = Decimal()
+        self.w1_out_cost = Decimal()
+        self.w1_profit = Decimal()
+        self.w1_sale_forecast = Decimal()
+        self.w1_stock_days = Decimal()
+        self.w1_stock_product = Decimal()
+        self.w1_turnover = Decimal()
+        self.w2_in = Decimal()
+        self.w2_out = Decimal()
+        self.w2_out_cost = Decimal()
+        self.w2_profit = Decimal()
+        self.w2_sale_forecast = Decimal()
+        self.w2_stock_days = Decimal()
+        self.w2_stock_product = Decimal()
+        self.w2_turnover = Decimal()
+        self.w4_in = Decimal()
+        self.w4_out = Decimal()
+        self.w4_out_cost = Decimal()
+        self.w4_profit = Decimal()
+        self.w4_sale_forecast = Decimal()
+        self.w4_stock_days = Decimal()
+        self.w4_stock_product = Decimal()
+        self.w4_turnover = Decimal()
+
+    @property
+    def valid(self):
+        product = self.w1_in + self.w1_out +\
+                  self.w2_in + self.w2_out +\
+                  self.w4_in + self.w4_out +\
+                  self.w1_stock_days +\
+                  self.w2_stock_days + self.w4_stock_days
+        return product
+
+    def addCurrSnap(self, snap):
+        self.w1.insert(0, snap)
+        self.__addW1(snap)
+        self.__setTurnover(snap)
+        if self.valid:
+            self.__setSnap(snap)
+            session.add(snap)
+
+    def __indexInsert(self, arr, snap):
+        if not arr:
+            arr.append(snap)
+        else:
+            i = 0
+            for i in range(len(arr)):
+                if snap.stamp > arr[i].stamp:
+                    arr.insert(arr.index(arr[i])+1, snap)
+                    break
+
+    def addInitSnap(self, currDate, snap):
+        # 初始化时需要调用此方法，不需要计算snap周转数据
+        delta = currDate - note.toDate(snap.stamp)
+        if delta < timedelta(days=7):
+            self.__indexInsert(self.w1, snap)
+        elif delta < timedelta(days=14):
+            self.__indexInsert(self.w2, snap)
+        elif delta < timedelta(days=28):
+            self.__indexInsert(self.w4, snap)
+        else:
+            raise Exception
+
+    def setCurrDate(self, currDate):
+        """
+        删除7、14、28天缓存中多余的item
+        1.w1中7天以外的移到w2
+        2.w2中14天以外的移到w4
+        3.w4中28天以外的删除
+        4.计算剩余的28个snap的周转数据，有有效数据
+          新增snap插入w1最开始位置
+        """
+        self.__currDate =currDate
+        if len(self.w1) == 7:
+            snap = self.w1.pop()
+            self.__subW1(snap)
+            self.__addW2(snap)
+            self.w2.insert(0, snap)
+        # w1 移来后变为 8
+        if len(self.w2) == 8:
+            snap = self.w2.pop()
+            self.__subW2(snap)
+            self.__addW4(snap)
+            self.w4.insert(0, snap)
+        if len(self.w4) == 15:
+            snap = self.w4.pop()
+            self.__subW4(snap)
+        self.len = len(self.w1) + len(self.w2) + len(self.w4)
+
+    def __addW1(self, snap):
+        self.w1_out += snap.today_out
+        self.w1_stock_product += snap.quantity
+        if snap.quantity > 0:
+            self.w1_stock_days += 1
+        self.w1_in += snap.today_in
+        self.w1_out_cost += snap.today_out_cost
+        self.w1_profit += snap.today_profit
+    def __addW2(self, snap):
+        self.w2_out += snap.today_out
+        self.w2_stock_product += snap.quantity
+        if snap.quantity > 0:
+            self.w2_stock_days += 1
+        self.w2_in += snap.today_in
+        self.w2_out_cost += snap.today_out_cost
+        self.w2_profit += snap.today_profit
+    def __addW4(self, snap):
+        self.w4_out += snap.today_out
+        self.w4_stock_product += snap.quantity
+        if snap.quantity > 0:
+            self.w4_stock_days += 1
+        self.w4_in += snap.today_in
+        self.w4_out_cost += snap.today_out_cost
+        self.w4_profit += snap.today_profit
+    def __subW1(self, snap):
+        self.w1_out -= snap.today_out
+        self.w1_stock_product -= snap.quantity
+        if snap.quantity > 0:
+            self.w1_stock_days -= 1
+        self.w1_in -= snap.today_in
+        self.w1_out_cost -= snap.today_out_cost
+        self.w1_profit -= snap.today_profit
+    def __subW2(self, snap):
+        self.w2_out -= snap.today_out
+        self.w2_stock_product -= snap.quantity
+        if snap.quantity > 0:
+            self.w2_stock_days -= 1
+        self.w2_in -= snap.today_in
+        self.w2_out_cost -= snap.today_out_cost
+        self.w2_profit -= snap.today_profit
+    def __subW4(self, snap):
+        self.w4_out -= snap.today_out
+        self.w4_stock_product -= snap.quantity
+        if snap.quantity > 0:
+            self.w4_stock_days -= 1
+        self.w4_in -= snap.today_in
+        self.w4_out_cost -= snap.today_out_cost
+        self.w4_profit -= snap.today_profit
+    def __setTurnover(self, snap):
+        if self.w1_out:
+            self.w1_turnover = self.w1_stock_product/self.w1_out
+            self.w1_sale_forecast = snap.quantity * self.w1_stock_days / self.w1_out
+        if self.w2_out:
+            self.w2_turnover = self.w2_stock_product/self.w2_out
+            self.w2_sale_forecast = snap.quantity * self.w2_stock_days / self.w2_out
+        if self.w4_out:
+            self.w4_turnover = self.w4_stock_product/self.w4_out
+            self.w4_sale_forecast = snap.quantity * self.w4_stock_days / self.w4_out
+    def __setSnap(self, snap):
+        snap.w1_in = self.w1_in
+        snap.w1_out = self.w1_out
+        snap.w1_out_cost = self.w1_out_cost
+        snap.w1_profit = self.w1_profit
+        snap.w1_sale_forecast = self.w1_sale_forecast
+        snap.w1_stock_days = self.w1_stock_days
+        snap.w1_stock_product = self.w1_stock_product
+        snap.w1_turnover = self.w1_turnover
+        snap.w2_in = self.w2_in
+        snap.w2_out = self.w2_out
+        snap.w2_out_cost = self.w2_out_cost
+        snap.w2_profit = self.w2_profit
+        snap.w2_sale_forecast = self.w2_sale_forecast
+        snap.w2_stock_days = self.w2_stock_days
+        snap.w2_stock_product = self.w2_stock_product
+        snap.w2_turnover = self.w2_turnover
+        snap.w4_in = self.w4_in
+        snap.w4_out = self.w4_out
+        snap.w4_out_cost = self.w4_out_cost
+        snap.w4_profit = self.w4_profit
+        snap.w4_sale_forecast = self.w4_sale_forecast
+        snap.w4_stock_days = self.w4_stock_days
+        snap.w4_stock_product = self.w4_stock_product
+        snap.w4_turnover = self.w4_turnover
+
+    def supplement(self):
+        snap = warehouse_snap()
+        snap.stamp = note.toStamp(self.__currDate)
+        # 拷贝基本字段，不需要拷贝 today 字段
+        warehouse_snap.copyBaseFields(self.w1[0], snap)
+        warehouse_snap.setSnapDefault(snap)
+        warehouse_snap.setTodayDefault(snap)
+        self.addCurrSnap(snap)
+
+class historySnaps(dict):
+    def __init__(self):
+        self.__keys = []
+        self.last = None
+        self.inited = False
+        super(historySnaps, self).__init__()
+
+    def init(self):
+        max_stamp = session.query(func.max(warehouse_snap.stamp).label('max_stamp')).one()
+        if  max_stamp[0]:
+            m = datetime.strptime( max_stamp[0], '%Y-%m-%d')
+            # 缓存过去4周每天的库存
+            s_stamp = (m - timedelta(days=28)).strftime('%Y-%m-%d')
+            self.last = m
+            for item in session.query(warehouse_snap).filter(warehouse_snap.stamp > s_stamp):
+                key = note.getKeyByStock(item)
+                self.addInitSnap(key, m, item)
+        self.inited = True
+
+    def beginDay(self, currDate):
+        """
+        缓存所有 snaps 的键值，处理一条库存后从缓存中
+        移出该库存的键值，处理完库存后再根据剩余的键
+        值条用endDay()处理插入新snap
+        """
+        curr = note.toDate(currDate)
+        self.len_item = 0
+        for v in self.values():
+            # 根据日期移动缓存的snap到w2或w4
+            v.setCurrDate(curr)
+            self.len_item += v.len
+        self.__keys = self.keys()
+        self.len_key = len(self.__keys)
+        self.last = curr
+
+    def endDay(self):
+        """
+        处理完库存的快照后，缓存中的28天历史snap中还有
+        有效数据的snap需要快照
+        删除28天内无有效数据的snap
+        """
+        for k in self.__keys:
+            snaps = self[k]
+            if not snaps.valid:
+                self.pop(k)
+            else:
+                snaps.supplement()
+
+    def addCurrSnap(self, key, item):
+        snaps = self.setdefault(key, w4Snap())
+        snaps.addCurrSnap(item)
+        # 初次运行时 self.__keys 没有值，导致异常
+        try:
+            self.__keys.remove(key)
+        except Exception:
+            pass
+    def addInitSnap(self, key, currDate, item):
+        snaps = self.setdefault(key, w4Snap())
+        snaps.addInitSnap(currDate, item)
+        try:
+            self.__keys.remove(key)
+        except Exception:
+            pass
+
 class _warehouse(_orm_base):
     department_id = Column(String(20))
     warehouse_id = Column(String(20))
@@ -172,6 +439,7 @@ class _warehouse(_orm_base):
 class warehouse(_Base, _warehouse):
     __tablename__ = 'bi_warehouse'
 
+    dateChange = Event()
     wareined = Event()
     wareining = Event()
     wareouted = Event()
@@ -207,8 +475,15 @@ class warehouse(_Base, _warehouse):
 
     @classmethod
     def __checkStock(cls, stamp):
+        """
+        如果日期变化触发 dateChange 事件
+        所有库存 today 相关字段置零
+        删除零库存
+        """
         cls.__currDate = cls.__currDate or stamp
         if cls.__currDate<>stamp:
+            cls.dateChange(datetime.strptime(stamp, '%Y-%m-%d'),
+                datetime.strptime(cls.__currDate, '%Y-%m-%d'),cls.__items)
             for key, item in cls.__items.items():
                 item.today_in = Decimal()
                 item.today_out = Decimal()
@@ -262,12 +537,11 @@ class warehouse(_Base, _warehouse):
     def warein(cls, doc):
         if not cls.__inited:cls.__init()
         cls.warein_check(doc, False)
-        stamp = doc.notedate.strftime('%Y-%m-%d')
+        stamp = doc.chargedate.strftime('%Y-%m-%d')
         cls.__checkStock(stamp)
 
         key = doc.key
         item = cls.__items.get(key)
-        cls.wareining(doc, item, cls.__items)
         if not item:
             item = cls()
             item.department_id = doc.department_id
@@ -287,6 +561,7 @@ class warehouse(_Base, _warehouse):
         item.quantity += doc.quantity
         item.amount += amount
         item.last_in_date = doc.notedate
+
         if doc.notetype == 'CR':
             item.today_in += doc.quantity
         elif doc.notetype == 'XT':
@@ -312,13 +587,11 @@ class warehouse(_Base, _warehouse):
     def wareout(cls, doc):
         if not cls.__inited:cls.__init()
         cls.wareout_check(doc)
-        key = doc.key
-        stamp = doc.notedate.strftime('%Y-%m-%d')
-        # 一定要在这个位置，因为__checkStock会删除零库存
+        stamp = doc.chargedate.strftime('%Y-%m-%d')
         cls.__checkStock(stamp)
 
+        key = doc.key
         item = cls.__items.get(key)
-        cls.wareouting(doc, item, cls.__items)
         cost = doc.quantity * item.price
         # 0库存将成本置0，要不然0数量成本不为零的库存会很多
         if item.quantity - doc.quantity == 0:
@@ -327,9 +600,12 @@ class warehouse(_Base, _warehouse):
         item.quantity -= doc.quantity
         item.amount -= cost
         item.last_out_date = doc.notedate
-        item.today_out += doc.quantity
-        item.today_profit += profit
-        item.today_out_cost += cost
+        if doc.notetype == 'XS':
+            item.today_out += doc.quantity
+            item.today_profit += profit
+            item.today_out_cost += cost
+        if doc.notetype == 'CT':
+            item.today_in -= doc.quantity
         doc.out_cost = cost
         doc.out_profit = profit
         cls.wareouted(doc, item, cls.__items)
@@ -382,206 +658,127 @@ class warehouse_snap(_Base, _warehouse):
     w4_sale_forecast = Column(Numeric(19,4))
 
     __last = None
-    __items = {}
     __inited = False
+    __items = historySnaps()
+    __currDate = None
 
     @classmethod
     def _init(cls):
-        #        max_stamp = session.query(func.max(snapcls.stamp).label('max_stamp')).subquery()
-        #        session.query(snapcls).join(max_stamp, and_(snapcls.stamp == max_stamp.c.max_stamp))
-        max_stamp = session.query(func.max(cls.stamp).label('max_stamp')).one()
-        s = max_stamp[0]
-        if s:
-            m = datetime.strptime(s, '%Y-%m-%d')
-            # 缓存过去4周每天的库存
-            s_stamp = (m + timedelta(days=-27)).strftime('%Y-%m-%d')
-            cls.__last = m
-            for item in session.query(cls).filter(cls.stamp >= s_stamp):
-                k = note.getStampKeyByStock(item)
-                cls.__items[k] = item
+        cls.__items.init()
+        cls.__last = cls.__items.last
         cls.__inited = True
 
     @classmethod
-    def __insert_stamp(cls, curr, stocks):
-        '''检查是否库存状态连续并插入'''
-        for stamp in list(rrule(DAILY, byhour=0, byminute=0, bysecond=0,
-            dtstart=cls.__last, until=curr))[1:-1]: # 最后一天未结束不快照
+    def __insert_stamp(cls, currDate, stocks):
+        """检查是否库存状态连续并插入
+        rrule 返回两个日期中间的日期列表，包含头和尾
+        """
+        for stampDate in list(rrule(DAILY, byhour=0, byminute=0, bysecond=0,
+            dtstart=cls.__items.last, until=currDate))[1:-1]: # 最后一天未结束不快照
+            # 设置缓存的当前日期并去掉缓存中多余的快照记录
+            stamp = note.toStamp(stampDate)
+
+            cls.__items.beginDay(stampDate)
+            print 'stamp:%s,len_key:%s,len_item:%s' % (note.toStamp(stampDate),
+                cls.__items.len_key, cls.__items.len_item)
+            # 逐条将库存做 snap
             for stock in stocks.values():
-                cls.__do_stock_snap(stamp, stock)
-            cls.__last = stamp
+                key = note.getKeyByStock(stock)
+                item = cls.__stockToSnap(stamp, stock)
+                cls.__items.addCurrSnap(key, item)
+            cls.__items.endDay()
+            cls.__last = stampDate
 
     @classmethod
-    def __getSnaps(cls, item, days):
-        items = []
-        curr = datetime.strptime(item.stamp, '%Y-%m-%d')
-        items.append(item)
-        for i in range(days-1):
-            curr = curr + timedelta(days=-1)
-            k = note.getKeyByStackDate(curr, item)
-            o = cls.__items.get(k)
-            if o:
-                items.append(o)
-        return items
+    def copyBaseFields(cls, source, target):
+        target.department_id = source.department_id
+        target.product_id = source.product_id
+        target.warehouse_id = source.warehouse_id
+        target.quantity = source.quantity
+        target.price = source.price
+        target.amount = source.amount
+        target.last_in_date = source.last_in_date
+        target.last_out_date = source.last_out_date
+    @classmethod
+    def copyTodayFields(cls, source, target):
+        target.today_in = source.today_in
+        target.today_out = source.today_out
+        target.today_out_cost = source.today_out_cost
+        target.today_profit = source.today_profit
+    @classmethod
+    def setTodayDefault(cls, snap):
+        snap.today_in = Decimal()
+        snap.today_out = Decimal()
+        snap.today_out_cost = Decimal()
+        snap.today_profit = Decimal()
+    @classmethod
+    def setSnapDefault(cls, snap):
+        snap.w1_in = Decimal()
+        snap.w1_out = Decimal()
+        snap.w1_out_cost = Decimal()
+        snap.w1_profit = Decimal()
+        snap.w1_sale_forecast = Decimal()
+        snap.w1_stock_days = Decimal()
+        snap.w1_stock_product = Decimal()
+        snap.w1_turnover = Decimal()
+        snap.w2_in = Decimal()
+        snap.w2_out = Decimal()
+        snap.w2_out_cost = Decimal()
+        snap.w2_profit = Decimal()
+        snap.w2_sale_forecast = Decimal()
+        snap.w2_stock_days = Decimal()
+        snap.w2_stock_product = Decimal()
+        snap.w2_turnover = Decimal()
+        snap.w4_in = Decimal()
+        snap.w4_out = Decimal()
+        snap.w4_out_cost = Decimal()
+        snap.w4_profit = Decimal()
+        snap.w4_sale_forecast = Decimal()
+        snap.w4_stock_days = Decimal()
+        snap.w4_stock_product = Decimal()
+        snap.w4_turnover = Decimal()
 
     @classmethod
-    def __getW1Snaps(cls, item):
-        return cls.__getSnaps(item, 7)
-    @classmethod
-    def __getW2Snaps(cls, item):
-        return cls.__getSnaps(item, 14)
-    @classmethod
-    def __getW4Snaps(cls, item):
-        return cls.__getSnaps(item, 28)
-
-    @classmethod
-    def __setStockSnap(cls, item):
-        items = cls.__getW1Snaps(item)
-        w_in = Decimal()
-        w_out = Decimal()
-        w_out_cost = Decimal()
-        w_profit = Decimal()
-        w_stock_product = Decimal()
-        w_stock_days = Decimal()
-
-        for d in items:
-            w_in += d.today_in
-            w_out += d.today_out
-            w_out_cost += d.today_out_cost
-            w_profit += d.today_profit
-            w_stock_product += d.quantity
-            if d.quantity<>0 or d.today_in<>0 or \
-                d.today_out<>0:
-                w_stock_days += 1
-
-        item.w1_in = w_in
-        item.w1_out = w_out
-        item.w1_out_cost = w_out_cost
-        item.w1_profit = w_profit
-        item.w1_stock_product = w_stock_product
-        item.w1_stock_days = w_stock_days
-        if w_out:
-            item.w1_turnover = w_stock_product/w_out
-            item.w1_sale_forecast = item.quantity * w_stock_days / w_out
-
-        items = cls.__getW2Snaps(item)
-        w_in = Decimal()
-        w_out = Decimal()
-        w_out_cost = Decimal()
-        w_profit = Decimal()
-        w_stock_product = Decimal()
-        w_stock_days = Decimal()
-
-        for d in items:
-            w_in += d.today_in
-            w_out += d.today_out
-            w_out_cost += d.today_out_cost
-            w_profit += d.today_profit
-            w_stock_product += d.quantity
-            w_stock_days += 1
-
-        item.w2_in = w_in
-        item.w2_out = w_out
-        item.w2_out_cost = w_out_cost
-        item.w2_profit = w_profit
-        item.w2_stock_product = w_stock_product
-        item.w2_stock_days = w_stock_days
-        if w_out:
-            item.w2_turnover = w_stock_product/w_out
-            item.w2_sale_forecast = item.quantity * w_stock_days / w_out
-
-        items = cls.__getW4Snaps(item)
-        w_in = Decimal()
-        w_out = Decimal()
-        w_out_cost = Decimal()
-        w_profit = Decimal()
-        w_stock_product = Decimal()
-        w_stock_days = Decimal()
-
-        for d in items:
-            w_in += d.today_in
-            w_out += d.today_out
-            w_out_cost += d.today_out_cost
-            w_profit += d.today_profit
-            w_stock_product += d.quantity
-            w_stock_days += 1
-
-        item.w4_in = w_in
-        item.w4_out = w_out
-        item.w4_out_cost = w_out_cost
-        item.w4_profit = w_profit
-        item.w4_stock_product = w_stock_product
-        item.w4_stock_days = w_stock_days
-        if w_out:
-            item.w4_turnover = w_stock_product/w_out
-            item.w4_sale_forecast = item.quantity * w_stock_days / w_out
-
-    @classmethod
-    def __delSnap(cls, currdate):
-        start = currdate + timedelta(days=-28)
-        stamp = note.dateToStamp(start)
-        for key in cls.__items.keys():
-            if stamp in key:
-                cls.__items.pop(key)
-
-    @classmethod
-    def __do_stock_snap(cls, stockdate, stock):
-        stamp = datetime.strftime(stockdate, '%Y-%m-%d')
+    def __stockToSnap(cls, stamp, stock):
         # 构建库存快照实体
         item = cls()
         item.stamp = stamp
-        item.department_id = stock.department_id
-        item.product_id = stock.product_id
-        item.warehouse_id = stock.warehouse_id
-        item.quantity = stock.quantity
-        item.price = stock.price
-        item.amount = stock.amount
-        item.last_in_date = stock.last_in_date
-        item.last_out_date = stock.last_out_date
-        item.today_in = stock.today_in
-        item.today_out = stock.today_out
-        item.today_out_cost = stock.today_out_cost
-        item.today_profit = stock.today_profit
-        cls.__setStockSnap(item) # 计算并设置字段值
-        k = note.getKeyByStackDate(stockdate, item)
-        cls.__items[k] = item
-        session.add(item) # 准备保存
-        # 去掉缓存中的4周前的快照记录
-        cls.__delSnap(stockdate)
-
-    @classmethod
-    def __do_snap(cls, currdate, stocks):
-        curr = datetime(currdate.year, currdate.month, currdate.day)
-        if not cls.__inited:
-            cls._init()
-        # 首次运行时 cls.__last 为空，赋予初始值
-        cls.__last = cls.__last or curr
-        # 如果昨天已快照不需要处理
-        last_stamp = curr + timedelta(days=-1)
-        if cls.__last >= last_stamp:return
-        # 插入没有业务记录的库存快照
-        cls.__insert_stamp(curr, stocks)
+        cls.copyBaseFields(stock, item)
+        cls.copyTodayFields(stock, item)
+        cls.setSnapDefault(item)
+        return item
 
     @classmethod
     def snapToStock(cls, snap):
         stock = warehouse()
-        stock.department_id = snap.department_id
-        stock.warehouse_id = snap.warehouse_id
-        stock.product_id = snap.product_id
-        stock.amount = snap.amount
-        stock.quantity = snap.quantity
-        stock.price = snap.price
-        stock.today_in = snap.today_in
-        stock.today_out = snap.today_out
-        stock.today_out_cost = snap.today_out_cost
-        stock.today_profit = snap.today_profit
         stock.stamp = snap.stamp
-        stock.last_in_date = snap.last_in_date
-        stock.last_out_date = snap.last_out_date
+        cls.copyBaseFields(snap, stock)
+        cls.copyTodayFields(snap, stock)
         return stock
 
     @classmethod
-    def do_snap(cls, doc, stock, stocks):
-        cls.__do_snap(doc.notedate, stocks)
+    def __do_snap(cls, currDate, stocks):
+        """
+        cls.__last 记录的是快照的最后一天，如 5月1日，那么currDate
+        是 5月2日结束后 5月3日开始时才需要做 5月2日的快照
+        """
+        last_stamp = currDate - timedelta(days=1)
+        if not cls.__inited:
+            cls._init()
+            # cls.__last 设置为前天
+            cls.__items.last = cls.__items.last or last_stamp - timedelta(days=1)
+            cls.__insert_stamp(currDate, stocks)
+            return
+            # 如果昨天已快照不需要处理
+        elif cls.__items.last < last_stamp:
+            # 插入没有业务记录的库存快照
+            cls.__insert_stamp(currDate, stocks)
+        else:
+            return
+
+    @classmethod
+    def do_snap(cls, currDate, oldDate, stocks):
+        cls.__do_snap(currDate, stocks)
 
     @classmethod
     def getLast(cls):
@@ -594,8 +791,18 @@ class warehouse_snap(_Base, _warehouse):
         s = backdate.strftime('%Y-%m-%d')
         session.query(warehouse_snap).filter(warehouse_snap.stamp>=s).delete()
 
-warehouse.wareining += warehouse_snap.do_snap
-warehouse.wareouting += warehouse_snap.do_snap
+    def copySnap(self, stamp):
+        snap = warehouse_snap()
+        warehouse_snap.__copyFields(self, snap)
+        snap.today_in = Decimal()
+        snap.today_out = Decimal()
+        snap.today_out_cost = Decimal()
+        snap.today_profit = Decimal()
+        snap.stamp = note.toStamp(stamp)
+        warehouse_snap.setSnapDefault(snap)
+        return snap
+
+warehouse.dateChange += warehouse_snap.do_snap
 
 class ware_journal(_Base, _orm_base):
     __tablename__ = 'bi_ware_journal'
@@ -603,6 +810,7 @@ class ware_journal(_Base, _orm_base):
     doc_id = Column(String(20))
     doc_type = Column(String(10))
     doc_date = Column(DateTime)
+    charge_date = Column(DateTime)
     warehouse_id = Column(String(20))
     department_id = Column(String(20))
     partner_id = Column(String(20))
@@ -632,6 +840,7 @@ class ware_journal(_Base, _orm_base):
         item.doc_id = doc.noteno
         item.doc_type = doc.notetype
         item.doc_date = doc.notedate
+        item.charge_date = doc.chargedate
         if doc.notetype in ('CR','XT','YR'):
             item.in_amount = doc.amount
             item.in_price = doc.price
@@ -669,6 +878,7 @@ class profit_journal(_Base, _orm_base):
     cost = Column(Numeric(19,4))
     profit = Column(Numeric(19,4))
     rate = Column(Numeric(19,4))
+    charge = Column(DateTime)
 
     @classmethod
     def tally(cls, *args, **kw):
