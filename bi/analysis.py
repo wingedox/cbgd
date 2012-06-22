@@ -201,16 +201,21 @@ class w4Snap(object):
 
     @property
     def valid(self):
-        product = self.w1_in + self.w1_out +\
+        """
+        要分开加，有可能 today + product 正负抵消，结果为零
+        """
+        today = self.w1_in + self.w1_out +\
                   self.w2_in + self.w2_out +\
-                  self.w4_in + self.w4_out +\
-                  self.w1_stock_days +\
+                  self.w4_in + self.w4_out
+        product = self.w1_stock_days +\
                   self.w2_stock_days + self.w4_stock_days
-        return product
+        return product or today
 
     def addCurrSnap(self, snap):
         self.w1.insert(0, snap)
         self.__addW1(snap)
+        self.__addW2(snap)
+        self.__addW4(snap)
         self.__setTurnover(snap)
         if self.valid:
             self.__setSnap(snap)
@@ -251,13 +256,11 @@ class w4Snap(object):
         if len(self.w1) == 7:
             snap = self.w1.pop()
             self.__subW1(snap)
-            self.__addW2(snap)
             self.w2.insert(0, snap)
         # w1 移来后变为 8
         if len(self.w2) == 8:
             snap = self.w2.pop()
             self.__subW2(snap)
-            self.__addW4(snap)
             self.w4.insert(0, snap)
         if len(self.w4) == 15:
             snap = self.w4.pop()
@@ -267,7 +270,7 @@ class w4Snap(object):
     def __addW1(self, snap):
         self.w1_out += snap.today_out
         self.w1_stock_product += snap.quantity
-        if snap.quantity > 0:
+        if snap.today_out or snap.today_in or snap.quantity:
             self.w1_stock_days += 1
         self.w1_in += snap.today_in
         self.w1_out_cost += snap.today_out_cost
@@ -275,7 +278,7 @@ class w4Snap(object):
     def __addW2(self, snap):
         self.w2_out += snap.today_out
         self.w2_stock_product += snap.quantity
-        if snap.quantity > 0:
+        if snap.today_out or snap.today_in or snap.quantity:
             self.w2_stock_days += 1
         self.w2_in += snap.today_in
         self.w2_out_cost += snap.today_out_cost
@@ -283,7 +286,7 @@ class w4Snap(object):
     def __addW4(self, snap):
         self.w4_out += snap.today_out
         self.w4_stock_product += snap.quantity
-        if snap.quantity > 0:
+        if snap.today_out or snap.today_in or snap.quantity:
             self.w4_stock_days += 1
         self.w4_in += snap.today_in
         self.w4_out_cost += snap.today_out_cost
@@ -291,7 +294,7 @@ class w4Snap(object):
     def __subW1(self, snap):
         self.w1_out -= snap.today_out
         self.w1_stock_product -= snap.quantity
-        if snap.quantity > 0:
+        if snap.today_out or snap.today_in or snap.quantity:
             self.w1_stock_days -= 1
         self.w1_in -= snap.today_in
         self.w1_out_cost -= snap.today_out_cost
@@ -299,7 +302,7 @@ class w4Snap(object):
     def __subW2(self, snap):
         self.w2_out -= snap.today_out
         self.w2_stock_product -= snap.quantity
-        if snap.quantity > 0:
+        if snap.today_out or snap.today_in or snap.quantity:
             self.w2_stock_days -= 1
         self.w2_in -= snap.today_in
         self.w2_out_cost -= snap.today_out_cost
@@ -307,7 +310,7 @@ class w4Snap(object):
     def __subW4(self, snap):
         self.w4_out -= snap.today_out
         self.w4_stock_product -= snap.quantity
-        if snap.quantity > 0:
+        if snap.today_out or snap.today_in or snap.quantity:
             self.w4_stock_days -= 1
         self.w4_in -= snap.today_in
         self.w4_out_cost -= snap.today_out_cost
@@ -674,7 +677,7 @@ class warehouse_snap(_Base, _warehouse):
         rrule 返回两个日期中间的日期列表，包含头和尾
         """
         for stampDate in list(rrule(DAILY, byhour=0, byminute=0, bysecond=0,
-            dtstart=cls.__items.last, until=currDate))[1:-1]: # 最后一天未结束不快照
+            dtstart=cls.__items.last, until=currDate))[1:]:
             # 设置缓存的当前日期并去掉缓存中多余的快照记录
             stamp = note.toStamp(stampDate)
 
@@ -682,12 +685,15 @@ class warehouse_snap(_Base, _warehouse):
             print 'stamp:%s,len_key:%s,len_item:%s' % (note.toStamp(stampDate),
                 cls.__items.len_key, cls.__items.len_item)
             # 逐条将库存做 snap
-            for stock in stocks.values():
-                key = note.getKeyByStock(stock)
-                item = cls.__stockToSnap(stamp, stock)
-                cls.__items.addCurrSnap(key, item)
+            # 速度优化,局部变量更容易查找
+            stockToSnap = cls.__stockToSnap
+            addCurrSnap = cls.__items.addCurrSnap
+            for key, stock in stocks.items():
+                item = stockToSnap(stamp, stock)
+                addCurrSnap(key, item)
             cls.__items.endDay()
             cls.__last = stampDate
+            print 'Snap OK!,'
 
     @classmethod
     def copyBaseFields(cls, source, target):
@@ -762,15 +768,14 @@ class warehouse_snap(_Base, _warehouse):
         cls.__last 记录的是快照的最后一天，如 5月1日，那么currDate
         是 5月2日结束后 5月3日开始时才需要做 5月2日的快照
         """
-        last_stamp = currDate - timedelta(days=1)
         if not cls.__inited:
             cls._init()
-            # cls.__last 设置为前天
-            cls.__items.last = cls.__items.last or last_stamp - timedelta(days=1)
+            # cls.__last 设置为昨天
+            cls.__items.last = cls.__items.last or currDate - timedelta(days=1)
             cls.__insert_stamp(currDate, stocks)
             return
             # 如果昨天已快照不需要处理
-        elif cls.__items.last < last_stamp:
+        elif cls.__items.last < currDate:
             # 插入没有业务记录的库存快照
             cls.__insert_stamp(currDate, stocks)
         else:
@@ -778,7 +783,7 @@ class warehouse_snap(_Base, _warehouse):
 
     @classmethod
     def do_snap(cls, currDate, oldDate, stocks):
-        cls.__do_snap(currDate, stocks)
+        cls.__do_snap(oldDate, stocks)
 
     @classmethod
     def getLast(cls):

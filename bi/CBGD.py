@@ -448,6 +448,7 @@ def main(rollback_day=True, Init=False):
             print e.message.decode('gbk')
             exit()
 
+#    i = 0
     while 1:
         sql = "select min(notedate) from bi_jxc where computed=0"
         if chargedate:
@@ -476,6 +477,8 @@ def main(rollback_day=True, Init=False):
             charge(day, chargedate)
             print 'complete!'
         chargedate = row[0] + timedelta(days=1)
+#        i += 1
+#        if i>38:break
 
     _cur.close()
 # todo: 库存周转
@@ -491,7 +494,8 @@ def main(rollback_day=True, Init=False):
 main(Init=True)
 #main()
 #import profile
-#profile.run('main()','p rof.txt')
+#profile.run('main(Init=True)','prof.txt')
 #import pstats
 #p = pstats.Stats('prof.txt')
 #p.sort_stats('cumulative').print_stats()
+#p.sort_stats('time').print_stats()
